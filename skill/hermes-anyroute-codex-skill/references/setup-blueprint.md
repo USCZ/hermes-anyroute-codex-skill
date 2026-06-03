@@ -1,6 +1,6 @@
 # Setup Blueprint
 
-This reference explains the intended VPS routing model for Hermes Agent using AnyRoute/AnyRouter through Codex.
+This reference explains the intended VPS routing model for Hermes Agent using AnyRoute/AnyRouter through local Codex.
 
 ## Mental Model
 
@@ -8,16 +8,16 @@ This reference explains the intended VPS routing model for Hermes Agent using An
 User on Telegram / Hermes CLI
   -> Hermes Gateway or `hermes chat`
   -> Hermes provider `codex-anyrouter`
-  -> Hermes runtime resolution rewrites to `codex_app_server`
+  -> runtime resolver rewrites to `codex_app_server`
   -> Codex app-server subprocess
   -> local Codex CLI config and auth
   -> AnyRouter `https://anyrouter.top/v1`
   -> model such as `gpt-5.5`
 ```
 
-The important design point is that Hermes should not send the AnyRouter key directly in this path. Hermes delegates the turn to Codex, and Codex uses its own config and auth files.
+Hermes is the shell and session owner. Codex is the model transport owner. AnyRouter credentials belong in Codex's private local state, not in public docs or repositories.
 
-## Expected Files
+## Expected Codex Files
 
 `~/.codex/config.toml`:
 
@@ -36,9 +36,11 @@ wire_api = "responses"
 
 ```json
 {
-  "OPENAI_API_KEY": "sk-..."
+  "OPENAI_API_KEY": "sk-REPLACE_WITH_ANYROUTER_KEY"
 }
 ```
+
+## Expected Hermes Files
 
 `~/.hermes/config.yaml`:
 
@@ -53,16 +55,27 @@ providers:
   codex-anyrouter:
     name: Codex AnyRouter
     base_url: https://anyrouter.top/v1
-    api_key: sk-...
+    api_key: sk-REPLACE_WITH_ANYROUTER_KEY
     default_model: gpt-5.5
     api_mode: codex_responses
 ```
 
-In the patched Hermes runtime resolver, the named provider `codex-anyrouter` is a special case: even when `openai_runtime` is `auto`, it resolves to `api_mode=codex_app_server` so the request follows local Codex.
+In the patched Hermes runtime resolver, `codex-anyrouter` is a special provider alias: even when the persisted config says `api_mode: codex_responses`, the effective runtime becomes `codex_app_server`. That is the whole point of the bridge.
+
+Confirm with:
+
+```bash
+python3 - <<'PY'
+from hermes_cli.runtime_provider import resolve_runtime_provider
+res = resolve_runtime_provider(requested="codex-anyrouter")
+for key in ("provider", "model", "base_url", "api_mode", "source"):
+    print(f"{key}: {res.get(key)}")
+PY
+```
 
 ## Validation Order
 
-1. Direct provider visibility:
+1. Read-only redacted config and runtime check:
 
 ```bash
 python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py
@@ -74,43 +87,38 @@ python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py
 python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py --live
 ```
 
-3. Manual Codex check:
+3. Optional gateway read-only status:
+
+```bash
+python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py --gateway
+```
+
+4. Manual Codex check:
 
 ```bash
 codex exec -C /tmp --skip-git-repo-check --ephemeral --model gpt-5.5 '只回复 OK，不要解释。'
 ```
 
-4. Manual Hermes check:
+5. Manual Hermes check:
 
 ```bash
 hermes chat -q '只回复 OK，不要解释。' --provider codex-anyrouter -m gpt-5.5 -t '' -Q --max-turns 1 --source tool
 ```
 
-5. Gateway read-only status:
-
-```bash
-systemctl is-active hermes-gateway.service
-systemctl show hermes-gateway.service -p ActiveState -p SubState -p ExecMainPID --no-pager
-python3 - <<'PY'
-import json, pathlib
-p = pathlib.Path('~/.hermes/gateway_state.json').expanduser()
-print(json.dumps(json.loads(p.read_text()), ensure_ascii=False, indent=2))
-PY
-```
-
-Only send a Telegram message if the user explicitly wants a Telegram end-to-end smoke test.
+Only send a Telegram message if the user explicitly wants Telegram delivery tested.
 
 ## Known Good Outcome
 
 - AnyRouter `/models` returns HTTP 200 and includes `gpt-5.5`.
 - `codex exec` returns `OK`.
 - `hermes chat --provider codex-anyrouter` returns `OK`.
-- `gateway_state.json` says Telegram and api_server are connected.
+- Runtime resolver reports `api_mode: codex_app_server`.
+- Gateway state says Telegram connected if messaging is in scope.
 
-That proves the active chain is usable:
+That proves this active chain:
 
 ```text
 Hermes -> Codex app-server -> local Codex AnyRouter config -> AnyRouter
 ```
 
-It does not prove direct Hermes `POST /responses` to AnyRouter is compatible. Keep those two routes separate.
+It does not prove direct Hermes `POST /responses` to AnyRouter is compatible.
