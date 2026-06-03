@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes AnyRoute Codex Operator"
+  short_description: "Operate Hermes through Codex and AnyRouter"
+  default_prompt: "Use $hermes-anyroute-codex-operator to verify and repair the Hermes -> Codex app-server -> AnyRouter chain."

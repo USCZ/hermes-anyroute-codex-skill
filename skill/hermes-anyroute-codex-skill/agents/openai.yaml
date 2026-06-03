@@ -1,4 +1,0 @@
-interface:
-  display_name: "Hermes AnyRoute Codex"
-  short_description: "Diagnose Hermes via Codex and AnyRouter"
-  default_prompt: "Use $hermes-anyroute-codex-skill to diagnose Hermes routing through Codex CLI and AnyRouter."

@@ -1,83 +1,54 @@
-# Hermes AnyRoute Codex Skill
+# Hermes AnyRoute Codex Operator
 
-这个仓库整理的是一条明确的 VPS 中转链路：
+这个仓库是一份面向 VPS 运维的 Hermes 技能与排障手册，用来维护这条生产链路：
 
 ```text
-用户入口（Telegram / Hermes CLI）
+Telegram
+  -> Hermes Gateway
   -> Hermes Agent
-  -> Hermes provider: codex-anyrouter
-  -> Hermes runtime: codex_app_server
-  -> 本机 Codex CLI / Codex app-server
-  -> Codex 读取 ~/.codex/config.toml 和 ~/.codex/auth.json
+  -> local codex app-server subprocess
+  -> /root/.codex/config.toml
   -> AnyRoute / AnyRouter https://anyrouter.top/v1
   -> gpt-5.5
 ```
 
-核心原则：**不要让 Hermes 直接打 AnyRouter。** Hermes 只负责会话、Gateway、技能和工具外壳；真正连接 AnyRouter 的请求交给 VPS 本机的 Codex runtime，由 Codex 使用自己的配置和 API key。
+核心结论：**AnyRoute 的 `gpt-5.5` 应通过 Codex CLI/app-server 运行，不应通过 Hermes 直接调用普通 Chat Completions 或朴素 Responses。**
 
-![Hermes AnyRoute Codex flow](skill/hermes-anyroute-codex-skill/assets/anyroute-codex-hermes-flow.svg)
+## 为什么不能直连
 
-## 当前 VPS 自检结果
+这台 VPS 已经实测过：
 
-最近一次 live 自检结果：
+| 请求方式 | 结果 |
+| --- | --- |
+| `/v1/chat/completions` + `gpt-5.5` | 返回不支持模型或失败 |
+| 朴素 `/v1/responses` 非流式 | `invalid codex request` 或类似错误 |
+| 朴素 `/v1/responses` 流式 | 可能返回 `must be stream request` 或请求形状错误 |
+| Codex CLI / Codex app-server | 可用 |
 
-| 层级 | 结果 | 说明 |
-| --- | --- | --- |
-| AnyRouter `/models` | PASS | HTTP 200，返回 15 个模型，包含 `gpt-5.5` |
-| Codex CLI | PASS | `codex exec ... '只回复 OK'` 返回 `OK` |
-| Hermes 主链路 | PASS | `hermes chat --provider codex-anyrouter ...` 返回 `OK` |
-| Runtime 解析 | PASS | `codex-anyrouter` 解析为 `api_mode=codex_app_server` |
-| Gateway | PASS | `hermes-gateway.service` active/running，Telegram connected |
+所以 `codex-anyrouter` 的关键不是“换一个 base_url”，而是强制 Hermes 把 turn 交给 Codex app-server，让 Codex 发送它自己的 Responses wire shape。
 
-这证明当前可用链路是：
-
-```text
-Hermes -> Codex app-server -> Codex AnyRouter config -> AnyRouter -> gpt-5.5
-```
-
-这不等于证明 `Hermes -> AnyRouter direct Responses API` 兼容。直接打 AnyRouter 的请求形状仍然可能失败，应该和这条 Codex 桥接链路分开判断。
-
-## 为什么要这样架设
-
-AnyRouter 与 Codex 的 Responses wire API 细节由 Codex CLI 维护。Hermes 如果直接用自己的 `codex_responses` 请求形状打 AnyRouter，可能遇到 `invalid codex request`、`invalid_responses_request` 或 new-api panic 之类的问题。
-
-使用 Codex app-server 后，Hermes 不再自己拼 AnyRouter 请求，而是把整轮对话交给本机 Codex：
+## 架构图
 
 ```mermaid
-sequenceDiagram
-    participant U as User / Telegram
-    participant H as Hermes Agent
-    participant C as Codex app-server
-    participant F as ~/.codex config/auth
-    participant A as AnyRouter
-    participant M as gpt-5.5
+flowchart LR
+    TG[Telegram user] --> GW[Hermes Gateway]
+    GW --> H[Hermes Agent]
+    H -->|provider: codex-anyrouter| R[Runtime resolver]
+    R -->|api_mode: codex_app_server| AS[codex app-server subprocess]
+    AS --> CFG[/root/.codex/config.toml]
+    AS --> AUTH[/root/.codex/auth.json]
+    CFG --> AR[AnyRoute / AnyRouter /v1]
+    AUTH --> AR
+    AR --> M[gpt-5.5]
+    M --> AR --> AS --> H --> GW --> TG
 
-    U->>H: prompt
-    H->>H: resolve provider codex-anyrouter
-    H->>C: turn/start via codex_app_server
-    C->>F: load model_provider=anyrouter
-    C->>A: Responses request with AnyRouter API key
-    A->>M: route model call
-    M-->>A: model output
-    A-->>C: streamed result
-    C-->>H: app-server events
-    H-->>U: final answer
+    H -. must not bypass Codex .-> BAD[Direct Hermes Responses]
+    BAD -. invalid codex request .-> AR
 ```
-
-## 文件分工
-
-| 文件 | 作用 | 是否放真实密钥 |
-| --- | --- | --- |
-| `~/.codex/config.toml` | 告诉 Codex 使用 AnyRouter provider、base URL、wire API 和默认模型 | 否 |
-| `~/.codex/auth.json` | 保存 Codex CLI 使用的 AnyRouter API key | 是，本机私有文件 |
-| `~/.hermes/config.yaml` | 告诉 Hermes 默认 provider 是 `codex-anyrouter` | 可有本机私有 key，但不要提交 |
-| 这个技能仓库 | 文档、自检脚本、故障定位说明 | 否 |
-
-不要把真实 API key、GitHub token、Telegram token 写进 README、SKILL.md、提交记录或 issue。
 
 ## Codex 配置
 
-`~/.codex/config.toml` 的关键形态：
+`/root/.codex/config.toml` 应保持这个形态：
 
 ```toml
 model = "gpt-5.5"
@@ -86,50 +57,56 @@ preferred_auth_method = "apikey"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
+[sandbox_workspace_write]
+network_access = true
+
 [model_providers.anyrouter]
 name = "Any Router"
 base_url = "https://anyrouter.top/v1"
 wire_api = "responses"
 ```
 
-`~/.codex/auth.json` 保存 AnyRouter key，示例只写占位符：
+`/root/.codex/auth.json` 保存 AnyRoute API key，仓库文档只写占位符：
 
 ```json
 {
-  "OPENAI_API_KEY": "sk-REPLACE_WITH_ANYROUTER_KEY"
+  "OPENAI_API_KEY": "sk-REPLACE_WITH_ANYROUTE_KEY"
 }
 ```
 
-检查 Codex 是否可用：
+配置原因：
 
-```bash
-codex --version
-codex exec -C /tmp --skip-git-repo-check --ephemeral --model gpt-5.5 '只回复 OK，不要解释。'
-```
-
-如果 Codex 输出 `chatgpt authentication required to sync remote plugins; api key auth is not supported`，但模型回答仍然成功，这通常只是 API-key 模式下同步 ChatGPT 插件目录的警告，不是主链路故障。
+- `approval_policy = "never"`：Telegram 里没有可靠的 Codex 审批 UI，避免 turn 卡在不可点击的 approval。
+- `sandbox_mode = "danger-full-access"`：这条链路用于 GitHub push、文件写入和长任务操作。真正高风险操作应由 Hermes 在回复中说明命令并等待自然语言确认。
+- `wire_api = "responses"`：AnyRoute 上的 `gpt-5.5` 依赖 Codex 使用的 Responses wire shape。
 
 ## Hermes 配置
 
-当前 VPS 使用一个命名 provider：
+`/root/.hermes/config.yaml` 中保留命名 provider：
 
 ```yaml
 model:
   default: gpt-5.5
   provider: codex-anyrouter
-  api_mode: codex_responses
+  context_length: 200000
   openai_runtime: auto
 
 providers:
   codex-anyrouter:
     name: Codex AnyRouter
     base_url: https://anyrouter.top/v1
-    api_key: sk-REPLACE_WITH_ANYROUTER_KEY
+    api_key: sk-REPLACE_WITH_ANYROUTE_KEY
     default_model: gpt-5.5
     api_mode: codex_responses
 ```
 
-看起来这里写的是 `api_mode: codex_responses`，但当前 Hermes 修改版对 `codex-anyrouter` 做了特殊解析：只要 provider 是 `codex-anyrouter`，最终 runtime 会改写成 `codex_app_server`。可以用下面命令确认：
+虽然配置里仍可写 `api_mode: codex_responses`，但运行时解析必须改写成：
+
+```text
+api_mode = codex_app_server
+```
+
+确认命令：
 
 ```bash
 python3 - <<'PY'
@@ -140,139 +117,115 @@ for key in ("provider", "model", "base_url", "api_mode", "source"):
 PY
 ```
 
-期望看到：
+期望：
 
 ```text
 provider: codex-anyrouter
 model: gpt-5.5
 base_url: https://anyrouter.top/v1
 api_mode: codex_app_server
-source: custom_provider:Codex AnyRouter:codex_app_server
 ```
 
-如果 `api_mode` 不是 `codex_app_server`，Hermes 可能正在绕过 Codex 直接打 AnyRouter，需要先修正 runtime 解析再做 live 测试。
+## Hermes 代码修复点
+
+这些修复点用于判断当前 Hermes 是否仍然保留 AnyRoute/Codex 生产路径：
+
+| 文件 | 需要保留的行为 |
+| --- | --- |
+| `hermes_cli/runtime_provider.py` | `codex-anyrouter` 强制解析为 `codex_app_server` |
+| `agent/background_review.py` | 当 parent 是 AnyRoute `codex_app_server` 时跳过 background direct fallback |
+| `agent/transports/codex_app_server_session.py` | AnyRoute API-key 模式不要提示 `codex login`；429/503/high demand 归类为上游波动 |
+| `agent/codex_runtime.py` | app-server turn timeout 使用 `HERMES_AGENT_TIMEOUT`，默认可到 1800s；超时时汇总 progress；短计划回复自动续跑 |
 
 ## 安装技能
 
-把技能目录复制到 Hermes 用户技能目录：
+复制到 Hermes 用户技能目录：
 
 ```bash
 mkdir -p ~/.hermes/skills/devops
-cp -R skill/hermes-anyroute-codex-skill ~/.hermes/skills/devops/
+cp -R skill/hermes-anyroute-codex-operator ~/.hermes/skills/devops/
 ```
-
-之后遇到 AnyRoute、AnyRouter、Codex app-server、Hermes provider 路由排查时，Hermes/Codex 可以使用这个技能里的流程和脚本。
 
 ## 一键自检
 
-默认模式只读配置并脱敏输出：
+只读配置和源码检查：
 
 ```bash
-python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py
+python3 skill/hermes-anyroute-codex-operator/scripts/check_anyroute_codex_operator.py
 ```
 
-live 模式会调用上游服务，可能消耗少量额度：
+live 检查会调用上游并消耗少量额度：
 
 ```bash
-python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py --live
+python3 skill/hermes-anyroute-codex-operator/scripts/check_anyroute_codex_operator.py --live
 ```
 
-包含 Gateway 只读状态：
+加入 Gateway 状态和工具联网检查：
 
 ```bash
-python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py --live --gateway
+python3 skill/hermes-anyroute-codex-operator/scripts/check_anyroute_codex_operator.py --live --gateway --tool-live
 ```
 
-输出最后会有汇总表：
+## 手动验证命令
 
-```text
-## Summary
-PASS  Codex config uses AnyRouter API-key mode
-PASS  Hermes provider is codex-anyrouter
-PASS  Runtime resolves to codex_app_server
-PASS  AnyRouter /models contains gpt-5.5
-PASS  Codex CLI returned OK
-PASS  Hermes returned OK via codex-anyrouter
-```
-
-## 分层手动验证
-
-按这个顺序查，能避免把故障定位到错误层。
-
-1. AnyRouter 是否在线、模型是否存在：
+基础 Hermes 链路：
 
 ```bash
-python3 skill/hermes-anyroute-codex-skill/scripts/check_anyroute_codex.py --live --skip-codex --skip-hermes
-```
-
-2. Codex 是否能通过 AnyRouter 回答：
-
-```bash
-codex exec -C /tmp --skip-git-repo-check --ephemeral --model gpt-5.5 '只回复 OK，不要解释。'
-```
-
-3. Hermes 是否通过 Codex 桥接链路回答：
-
-```bash
-hermes chat -q '只回复 OK，不要解释。' \
+hermes chat -q '只回复 APP_SERVER_PATCH_OK' \
   --provider codex-anyrouter \
-  -m gpt-5.5 \
-  -t '' \
-  -Q \
-  --max-turns 1 \
-  --source tool
+  --model gpt-5.5 \
+  --toolsets '' \
+  --quiet
 ```
 
-4. Gateway 是否在线：
+Codex CLI 直连 AnyRoute：
 
 ```bash
-systemctl is-active hermes-gateway.service
-systemctl show hermes-gateway.service -p ActiveState -p SubState -p ExecMainPID --no-pager
+codex exec -C /tmp --skip-git-repo-check --model gpt-5.5 '只回复 PING_OK'
 ```
 
-Gateway connected 只说明 Telegram/API server 传输层在线，不证明模型链路可用。模型 smoke 成功也不等于 Telegram 投递已验证。Telegram 端到端发消息属于外部副作用，通常单独确认。
+工具联网：
 
-## 故障定位表
+```bash
+hermes chat -q '请用终端运行 curl -I -s https://github.com，只回复 HTTP 首行。' \
+  --provider codex-anyrouter \
+  --model gpt-5.5 \
+  --quiet
+```
 
-| 现象 | 更可能的问题层 | 处理方式 |
+## 常见错误判断
+
+| 现象 | 判断 | 处理 |
 | --- | --- | --- |
-| `/models` 不含 `gpt-5.5` | AnyRouter 账号、额度、模型名或路由 | 先确认 AnyRouter 后台和模型 ID |
-| `codex exec` 失败，Hermes 也失败 | Codex -> AnyRouter | 查 `~/.codex/config.toml`、`~/.codex/auth.json`、AnyRouter key |
-| `codex exec` 成功，Hermes 失败 | Hermes -> Codex runtime | 查 `codex-anyrouter` 是否解析为 `codex_app_server` |
-| Hermes 返回 `invalid codex request` | Hermes 可能直连 AnyRouter | 不要走 direct Responses，改回 Codex app-server |
-| `429`、`503`、`high demand`、`stream disconnected` | AnyRouter 或上游拥塞 | 降低并发、稍后重试、临时切到其它 provider |
-| ChatGPT plugin 401 警告，但回答 OK | Codex API-key 模式的非致命插件同步警告 | 忽略，不要误判成需要 `codex login` |
-| 辅助任务报 `openai-codex` 500 | 标题、压缩、记忆、技能回顾等辅助链路 | 和主模型链路分开处理 |
+| `invalid codex request` | Hermes 可能绕过 Codex 直打 AnyRoute | 检查 `api_mode` 是否实际为 `codex_app_server` |
+| `must be stream request` | 朴素 Responses 形状不兼容 | 不要改成 direct Responses |
+| `high demand` / `stream disconnected` / `429` / `503` | AnyRoute 或上游波动 | 降低并发、稍后重试、临时切 provider |
+| ChatGPT plugin sync 401 | Codex API-key 模式的非致命插件同步警告 | 如果模型回答成功，可忽略 |
+| TG 只收到短回复但后台有请求 | app-server progress 未被充分汇总或 turn 超时 | 检查 `HERMES_AGENT_TIMEOUT`、progress summary、auto-continue |
+| GitHub push 403 | token 权限不足 | 给目标仓库 `Contents: Read and write`，不要反复重试 |
 
-## 技能目录结构
+## GitHub Token 要求
+
+Fine-grained PAT 推荐设置：
 
 ```text
-skill/hermes-anyroute-codex-skill/
+Repository access: only the target repository
+Repository permissions:
+  Contents: Read and write
+  Metadata: Read-only
+```
+
+如果需要创建仓库，还需要创建仓库权限；否则先在网页创建仓库，再只授予目标仓库 contents write。
+
+不要把 GitHub PAT 写进 README、技能文件、git remote URL 或 shell 历史。
+
+## 产物结构
+
+```text
+skill/hermes-anyroute-codex-operator/
   SKILL.md
   agents/openai.yaml
-  scripts/check_anyroute_codex.py
-  references/setup-blueprint.md
+  scripts/check_anyroute_codex_operator.py
+  references/operator-runbook.md
   references/error-map.md
-  assets/anyroute-codex-hermes-flow.svg
 ```
-
-## 可选生成式配图提示词
-
-仓库里已经有一张可直接在 GitHub 渲染的 SVG 流程图。如果后续想换成生成式封面图，可以把下面提示词交给图像模型，然后把生成结果放到 `skill/hermes-anyroute-codex-skill/assets/`：
-
-```text
-Create a clean technical architecture illustration for a GitHub README.
-Subject: a VPS-hosted AI routing chain where Telegram or Hermes CLI sends a prompt to Hermes Agent, Hermes delegates to local Codex app-server, Codex reads ~/.codex/config.toml and ~/.codex/auth.json, then calls AnyRouter /v1 and routes to gpt-5.5.
-Style: modern flat vector-like infographic, light background, crisp lines, readable labels, no mascots, no decorative blobs, no fake UI screenshots.
-Required labels: "Telegram / Hermes CLI", "Hermes Agent", "provider: codex-anyrouter", "runtime: codex_app_server", "Codex app-server", "~/.codex/config.toml", "~/.codex/auth.json", "AnyRouter /v1", "gpt-5.5".
-Composition: left-to-right pipeline with arrows, one small warning callout saying "Do not bypass Codex with direct Hermes -> AnyRouter Responses calls".
-Aspect ratio: 16:9.
-No secrets, no real API keys, no logos unless legally safe.
-```
-
-## 安全约定
-
-- 不提交真实 API key、GitHub token、Telegram token、OAuth token、cookie 或 raw `Authorization` header。
-- 自检脚本会脱敏常见 secret，但仍不要把完整命令输出贴到公开 issue。
-- 改 `~/.hermes/config.yaml` 前先备份；如果切 runtime 失败，恢复旧配置再结束。
-- 不要把一次 Gateway connected 当成模型链路成功；至少跑一次 Hermes `OK` smoke。
