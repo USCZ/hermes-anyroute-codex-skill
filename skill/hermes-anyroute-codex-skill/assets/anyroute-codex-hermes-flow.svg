@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes to Codex to AnyRouter flow</title>
+  <desc id="desc">A flow diagram showing Telegram or Hermes CLI entering Hermes Agent, then Codex app-server, local Codex config, AnyRouter, and the upstream model.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#1f2937"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .card { fill: #ffffff; stroke: #334155; stroke-width: 2; rx: 10; }
+      .accent { fill: #e0f2fe; stroke: #0369a1; }
+      .codex { fill: #ecfdf5; stroke: #047857; }
+      .any { fill: #fff7ed; stroke: #c2410c; }
+      .text { font: 700 25px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 17px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .tiny { font: 500 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #475569; }
+      .arrow { stroke: #1f2937; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .note { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="560"/>
+  <text x="48" y="58" class="text">Hermes AnyRoute / Codex Bridge</text>
+  <text x="48" y="88" class="small">Target path: Hermes delegates the turn to local Codex; Codex owns the AnyRouter API-key call.</text>
+
+  <rect class="card accent" x="48" y="150" width="170" height="116"/>
+  <text x="80" y="196" class="text">User</text>
+  <text x="76" y="226" class="small">Telegram</text>
+  <text x="72" y="250" class="small">or Hermes CLI</text>
+
+  <path class="arrow" d="M218 208 H300"/>
+
+  <rect class="card accent" x="300" y="132" width="202" height="152"/>
+  <text x="336" y="184" class="text">Hermes</text>
+  <text x="330" y="216" class="tiny">provider:</text>
+  <text x="330" y="240" class="tiny">codex-anyrouter</text>
+  <text x="330" y="264" class="tiny">runtime: app-server</text>
+
+  <path class="arrow" d="M502 208 H584"/>
+
+  <rect class="card codex" x="584" y="132" width="226" height="152"/>
+  <text x="622" y="184" class="text">Codex</text>
+  <text x="620" y="216" class="tiny">app-server subprocess</text>
+  <text x="620" y="240" class="tiny">uses local CLI state</text>
+  <text x="620" y="264" class="tiny">wire_api = responses</text>
+
+  <path class="arrow" d="M810 208 H892"/>
+
+  <rect class="card codex" x="892" y="132" width="164" height="152"/>
+  <text x="930" y="184" class="text">Files</text>
+  <text x="916" y="216" class="tiny">~/.codex/config.toml</text>
+  <text x="916" y="240" class="tiny">~/.codex/auth.json</text>
+  <text x="916" y="264" class="tiny">API key redacted</text>
+
+  <path class="arrow" d="M1056 208 H1138"/>
+
+  <rect class="card any" x="1138" y="132" width="94" height="152"/>
+  <text x="1152" y="184" class="text">Any</text>
+  <text x="1152" y="214" class="text">Router</text>
+  <text x="1156" y="246" class="tiny">/v1</text>
+
+  <rect class="note" x="300" y="350" width="304" height="104"/>
+  <text x="326" y="386" class="small">Smoke test 1</text>
+  <text x="326" y="416" class="tiny">codex exec ... '只回复 OK'</text>
+
+  <rect class="note" x="636" y="350" width="360" height="104"/>
+  <text x="662" y="386" class="small">Smoke test 2</text>
+  <text x="662" y="416" class="tiny">hermes chat --provider codex-anyrouter</text>
+
+  <rect class="note" x="48" y="472" width="1184" height="54"/>
+  <text x="72" y="506" class="small">Do not confuse this with direct Hermes -> AnyRouter Responses calls; direct calls can fail even when the Codex bridge works.</text>
+</svg>
