@@ -1,3 +1,38 @@
+# Python cache
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local editor and OS files
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets and local-only config
+.env
+.env.*
+*.token
+*_token
+*github_pat*
+auth.json
+config.local.*
+*.pem
+*.key
+
+# Runtime output
+*.log
+*.bak
+*.tmp
+*.mp3
+*.wav
+tmp/
