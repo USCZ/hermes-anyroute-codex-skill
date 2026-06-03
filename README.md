@@ -139,7 +139,7 @@ nano /root/.codex/auth.json
 
 ```json
 {
-  "OPENAI_API_KEY": "sk-REPLACE_WITH_ANYROUTE_KEY"
+  "OPENAI_API_KEY": "<YOUR_ANYROUTE_API_KEY>"
 }
 ```
 
@@ -167,7 +167,7 @@ providers:
   codex-anyrouter:
     name: Codex AnyRouter
     base_url: https://anyrouter.top/v1
-    api_key: sk-REPLACE_WITH_ANYROUTE_KEY
+    api_key: <YOUR_ANYROUTE_API_KEY>
     default_model: gpt-5.5
     api_mode: codex_responses
 ```
