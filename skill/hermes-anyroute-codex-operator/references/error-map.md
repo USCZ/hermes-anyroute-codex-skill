@@ -59,6 +59,7 @@ Symptoms:
 
 ```text
 resolve_runtime_provider(...).api_mode = codex_responses
+resolve_runtime_provider(...).api_mode = custom
 Codex direct probe returns PING_OK
 Hermes bridge probe fails
 ```
@@ -66,6 +67,21 @@ Hermes bridge probe fails
 Likely cause: `codex-anyrouter` is not being rewritten to `codex_app_server`.
 
 Action: inspect `hermes_cli/runtime_provider.py`, especially `_maybe_apply_codex_app_server_runtime()` and named custom provider resolution.
+
+## Gateway Restart Regression
+
+Symptoms:
+
+```text
+The gateway worked before a VPS or hermes-gateway.service restart
+⚠️ The model provider failed after retries
+provider=custom base_url=https://anyrouter.top/v1 model=gpt-5.5
+HTTP 400: invalid codex request
+```
+
+Likely cause: after service restart, Hermes reloaded config/provider state and sent AnyRoute `gpt-5.5` through direct/custom instead of Codex app-server.
+
+Action: restore `/root/.hermes/config.yaml` so both `model.api_mode` and `providers.codex-anyrouter.api_mode` are `codex_app_server`; confirm runtime resolution returns `codex_app_server`; install and run `/usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py`; verify the systemd drop-in has the `ExecStartPre` guard before restarting gateway again.
 
 ## Background Review Direct Fallback
 

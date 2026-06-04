@@ -20,6 +20,8 @@ Telegram -> Hermes Gateway -> Hermes Agent -> codex-anyrouter
 
 Do not "fix" this by switching Hermes to direct Chat Completions or naive Responses against AnyRoute. On this VPS, `gpt-5.5` works through Codex CLI/app-server's request shape.
 
+If gateway logs show `provider=custom base_url=https://anyrouter.top/v1 model=gpt-5.5` with `invalid codex request`, treat it as a routing regression: Hermes bypassed Codex app-server after restart or config reload.
+
 ## Install The Skill
 
 If the skill is not installed yet, use `terminal` to copy it from the repository:
@@ -57,9 +59,28 @@ Healthy signals:
 
 - Codex CLI version is at least `0.136.0`.
 - `/root/.codex/config.toml` uses provider `anyrouter`, `preferred_auth_method = "apikey"`, `wire_api = "responses"`, `approval_policy = "never"`, and `sandbox_mode = "danger-full-access"`.
-- `/root/.hermes/config.yaml` uses provider `codex-anyrouter`.
+- `/root/.hermes/config.yaml` uses provider `codex-anyrouter` and `api_mode: codex_app_server` for the model/provider binding.
 - Runtime resolution returns `api_mode = "codex_app_server"`.
+- `/usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py` exists, runs successfully, and is wired into `hermes-gateway.service` with `ExecStartPre`.
 - Live Codex and Hermes probes return the expected sentinel text.
+
+## Gateway Restart Guard
+
+If the guard is missing, copy the bundled script and install the drop-in:
+
+```bash
+install -m 0755 ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/hermes_anyroute_guard.py /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+mkdir -p /etc/systemd/system/hermes-gateway.service.d
+printf '%s\n' '[Service]' 'ExecStartPre=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py' > /etc/systemd/system/hermes-gateway.service.d/10-anyroute-guard.conf
+systemctl daemon-reload
+/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+Expected guard output:
+
+```text
+[hermes-anyroute-guard] OK: codex-anyrouter is bound to Codex app-server
+```
 
 ## Manual Probes
 
@@ -105,6 +126,7 @@ Expected behavior:
 - `background_review.py`: AnyRoute `codex_app_server` parents skip background review direct fallback.
 - `codex_app_server_session.py`: AnyRoute API-key mode does not suggest `codex login`; 429/503/high-demand/stream-disconnected errors are classified as upstream instability; ChatGPT plugin sync 401 is non-fatal.
 - `codex_runtime.py`: app-server turn timeout follows `HERMES_AGENT_TIMEOUT`; timeout responses include assistant progress; short plan-only finals auto-continue for autonomous long tasks.
+- `scripts/hermes_anyroute_guard.py`: startup guard fails fast if config or resolver would route `codex-anyrouter` anywhere except `codex_app_server`.
 
 ## References
 

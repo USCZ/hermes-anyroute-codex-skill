@@ -53,6 +53,11 @@ NOISE_PATTERNS = (
     "codex_file_watcher",
 )
 
+EXPECTED_BASE_URL = "https://anyrouter.top/v1"
+EXPECTED_PROVIDER = "codex-anyrouter"
+EXPECTED_MODEL = "gpt-5.5"
+SYSTEMD_GUARD_DROPIN = Path("/etc/systemd/system/hermes-gateway.service.d/10-anyroute-guard.conf")
+
 
 @dataclass
 class Check:
@@ -237,6 +242,9 @@ def inspect_hermes_config(hermes_home: Path) -> tuple[str, str]:
     api_mode = str(model_cfg.get("api_mode") or "")
     providers = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
     named = providers.get(provider, {}) if isinstance(providers, dict) else {}
+    named_api_mode = str(named.get("api_mode") or "")
+    named_base_url = str(named.get("base_url") or "").rstrip("/")
+    named_default_model = str(named.get("default_model") or "")
 
     for key, value in (
         ("model.default", model),
@@ -244,23 +252,38 @@ def inspect_hermes_config(hermes_home: Path) -> tuple[str, str]:
         ("model.context_length", context_length),
         ("model.openai_runtime", openai_runtime),
         ("model.api_mode", api_mode),
-        ("providers.<provider>.base_url", named.get("base_url", "")),
-        ("providers.<provider>.api_mode", named.get("api_mode", "")),
-        ("providers.<provider>.default_model", named.get("default_model", "")),
+        ("providers.<provider>.base_url", named_base_url),
+        ("providers.<provider>.api_mode", named_api_mode),
+        ("providers.<provider>.default_model", named_default_model),
     ):
         print_kv(key, value)
 
     record(
         "Hermes provider is codex-anyrouter",
-        "PASS" if provider == "codex-anyrouter" else "FAIL",
+        "PASS" if provider == EXPECTED_PROVIDER else "FAIL",
         provider or "missing",
+    )
+    record(
+        "Hermes AnyRoute base URL is AnyRouter",
+        "PASS" if named_base_url == EXPECTED_BASE_URL else "FAIL",
+        named_base_url or "missing",
+    )
+    record(
+        "Hermes default model is gpt-5.5",
+        "PASS" if model == EXPECTED_MODEL and named_default_model == EXPECTED_MODEL else "WARN",
+        f"model.default={model or 'missing'}, providers.default_model={named_default_model or 'missing'}",
+    )
+    record(
+        "Hermes config binds AnyRoute to codex_app_server",
+        "PASS" if api_mode == "codex_app_server" and named_api_mode == "codex_app_server" else "FAIL",
+        f"model.api_mode={api_mode or 'missing'}, providers.api_mode={named_api_mode or 'missing'}",
     )
     record(
         "Hermes context length configured for long tasks",
         "PASS" if isinstance(context_length, int) and context_length >= 200000 else "WARN",
         context_length,
     )
-    return provider or "codex-anyrouter", model or "gpt-5.5"
+    return provider or EXPECTED_PROVIDER, model or EXPECTED_MODEL
 
 
 def inspect_codex_version() -> None:
@@ -314,42 +337,118 @@ def inspect_source_fixes(hermes_root: Path) -> None:
             "runtime_provider codex-anyrouter app-server rewrite",
             hermes_root / "hermes_cli" / "runtime_provider.py",
             ('provider_norm == "codex-anyrouter"', 'return "codex_app_server"', '":codex_app_server"'),
+            "FAIL",
         ),
         (
             "background_review skips AnyRouter app-server review",
             hermes_root / "agent" / "background_review.py",
-            ('_parent_api_mode == "codex_app_server"', '"codex-anyrouter"', "Skipping background review"),
+            ('_parent_api_mode == "codex_app_server"', '"anyrouter"', "Skipping background review"),
+            "WARN",
         ),
         (
             "app-server session classifies AnyRouter API-key failures",
             hermes_root / "agent" / "transports" / "codex_app_server_session.py",
-            ("_codex_config_uses_anyrouter_apikey", "_classify_anyrouter_provider_failure", "AnyRouter key", "right fix"),
+            ("_codex_config_uses_anyrouter_apikey", "Codex CLI API-key config", "AnyRoute quota/rate limits"),
+            "WARN",
         ),
         (
             "app-server session treats ChatGPT plugin sync separately",
             hermes_root / "agent" / "transports" / "codex_app_server_session.py",
             ("chatgpt.com/backend-api/plugins/featured", "AnyRouter key", "401 unauthorized"),
+            "WARN",
         ),
         (
             "codex_runtime uses long app-server timeout",
-            hermes_root / "agent" / "codex_runtime.py",
+            hermes_root / "agent" / "transports" / "codex_app_server_session.py",
             ("HERMES_CODEX_APPSERVER_TURN_TIMEOUT", "HERMES_AGENT_TIMEOUT", "1800"),
+            "WARN",
         ),
         (
             "codex_runtime summarizes progress on timeout",
-            hermes_root / "agent" / "codex_runtime.py",
-            ("_build_app_server_progress_response", "assistant progress", "未完全收尾"),
+            hermes_root / "agent" / "transports" / "codex_app_server_session.py",
+            ("turn timed out after", "result.error", "should_retire"),
+            "WARN",
         ),
         (
             "codex_runtime auto-continues short plan finals",
             hermes_root / "agent" / "codex_runtime.py",
             ("_looks_like_incomplete_app_server_final", "_build_app_server_autocontinue_prompt", "auto-continue"),
+            "WARN",
         ),
     ]
-    for name, path, needles in checks:
+    for name, path, needles, missing_status in checks:
         ok = file_contains(path, needles)
         print_kv(name, "PASS" if ok else f"missing in {path}")
-        record(name, "PASS" if ok else "FAIL", path)
+        record(name, "PASS" if ok else missing_status, path)
+
+
+def hermes_python(hermes_root: Path) -> str:
+    for rel in ("venv/bin/python", ".venv/bin/python"):
+        candidate = hermes_root / rel
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+def inspect_restart_guard(hermes_root: Path) -> None:
+    print_section("Gateway restart guard")
+    guard_path = hermes_root / "scripts" / "hermes_anyroute_guard.py"
+    print_kv("guard_path", guard_path)
+    print_kv("systemd_dropin", SYSTEMD_GUARD_DROPIN)
+
+    guard_exists = guard_path.exists()
+    record(
+        "AnyRoute gateway restart guard script installed",
+        "PASS" if guard_exists else "FAIL",
+        guard_path,
+    )
+    if guard_exists:
+        guard_has_markers = file_contains(
+            guard_path,
+            (
+                "provider: codex-anyrouter",
+                "api_mode: codex_app_server",
+                'model_provider = "anyrouter"',
+                'wire_api = "responses"',
+                "resolve_runtime_provider",
+                "codex-anyrouter is bound to Codex app-server",
+            ),
+        )
+        record(
+            "AnyRoute gateway restart guard checks app-server binding",
+            "PASS" if guard_has_markers else "FAIL",
+            guard_path,
+        )
+        python = hermes_python(hermes_root)
+        code, output = run_simple([python, str(guard_path)], timeout=30)
+        print_kv("guard_python", python)
+        print_kv("guard_exit_code", code)
+        print_kv("guard_output", output)
+        record(
+            "AnyRoute gateway restart guard executes successfully",
+            "PASS" if code == 0 and "OK:" in output else "FAIL",
+            output or f"exit_code={code}",
+        )
+
+    dropin_exists = SYSTEMD_GUARD_DROPIN.exists()
+    record(
+        "hermes-gateway.service ExecStartPre guard drop-in installed",
+        "PASS" if dropin_exists else "FAIL",
+        SYSTEMD_GUARD_DROPIN,
+    )
+    if dropin_exists:
+        try:
+            dropin = SYSTEMD_GUARD_DROPIN.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            record("hermes-gateway.service guard drop-in readable", "FAIL", exc)
+            return
+        ok = "ExecStartPre=" in dropin and str(guard_path) in dropin
+        print_kv("dropin_excerpt", dropin.strip())
+        record(
+            "hermes-gateway.service runs AnyRoute guard before start",
+            "PASS" if ok else "FAIL",
+            dropin.strip() or "empty",
+        )
 
 
 def read_codex_api_key(codex_home: Path) -> str:
@@ -492,6 +591,7 @@ def main() -> int:
     inspect_codex_version()
     inspect_runtime_resolution(hermes_root, provider)
     inspect_source_fixes(hermes_root)
+    inspect_restart_guard(hermes_root)
 
     if args.live:
         probe_models(base_url, model, codex_home, timeout=min(args.timeout, 60))

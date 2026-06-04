@@ -45,6 +45,7 @@ wire_api = "responses"
 model:
   default: gpt-5.5
   provider: codex-anyrouter
+  api_mode: codex_app_server
   context_length: 200000
   openai_runtime: auto
 
@@ -54,10 +55,65 @@ providers:
     base_url: https://anyrouter.top/v1
     api_key: <YOUR_ANYROUTE_API_KEY>
     default_model: gpt-5.5
-    api_mode: codex_responses
+    api_mode: codex_app_server
 ```
 
-The persisted provider mode can remain `codex_responses`; the effective runtime must be `codex_app_server`.
+The persisted config and the effective runtime must both bind `codex-anyrouter` to `codex_app_server`. Do not leave `codex_responses` or `custom` as the AnyRoute production mode.
+
+## Gateway Restart Guard
+
+The restart guard prevents this failure after VPS or gateway restarts:
+
+```text
+Hermes -> provider=custom -> https://anyrouter.top/v1 -> gpt-5.5
+HTTP 400: invalid codex request
+```
+
+Install the bundled guard into the Hermes source tree:
+
+```bash
+install -m 0755 \
+  ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/hermes_anyroute_guard.py \
+  /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+Systemd drop-in:
+
+```text
+/etc/systemd/system/hermes-gateway.service.d/10-anyroute-guard.conf
+```
+
+Required content:
+
+```ini
+[Service]
+ExecStartPre=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+The guard checks:
+
+- `/root/.hermes/config.yaml` names `codex-anyrouter`, AnyRoute base URL, and `api_mode: codex_app_server`.
+- `/root/.codex/config.toml` uses `model_provider = "anyrouter"`, `preferred_auth_method = "apikey"`, AnyRoute base URL, and `wire_api = "responses"`.
+- `/root/.codex/auth.json` contains an `OPENAI_API_KEY`.
+- `resolve_runtime_provider("codex-anyrouter", "gpt-5.5")` returns `api_mode = "codex_app_server"`.
+
+Validation:
+
+```bash
+systemctl daemon-reload
+/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+systemctl restart hermes-gateway.service
+systemctl status hermes-gateway.service --no-pager -l
+journalctl -u hermes-gateway.service --since "5 minutes ago" --no-pager -l
+```
+
+Expected guard line:
+
+```text
+[hermes-anyroute-guard] OK: codex-anyrouter is bound to Codex app-server
+```
+
+The logs should not contain new `provider=custom base_url=https://anyrouter.top/v1` or `invalid codex request` lines.
 
 ## Static Code Audit
 
@@ -145,13 +201,19 @@ codex exec -C /tmp --skip-git-repo-check --model gpt-5.5 '只回复 PING_OK'
 hermes chat -q '只回复 APP_SERVER_PATCH_OK' --provider codex-anyrouter --model gpt-5.5 --toolsets '' --quiet
 ```
 
-4. Tool/network path:
+4. Restart-regression sentinel:
+
+```bash
+timeout 180 hermes chat -q '只回复 STRONG_BIND_OK' --provider codex-anyrouter --model gpt-5.5 --toolsets '' --quiet
+```
+
+5. Tool/network path:
 
 ```bash
 hermes chat -q '请用终端运行 curl -I -s https://github.com，只回复 HTTP 首行。' --provider codex-anyrouter --model gpt-5.5 --quiet
 ```
 
-5. Gateway:
+6. Gateway:
 
 ```bash
 systemctl is-active hermes-gateway.service
@@ -163,7 +225,8 @@ Gateway connected proves transport status only; it does not prove the model path
 ## Recovery Flow
 
 1. If Codex direct fails, inspect `/root/.codex/config.toml`, `/root/.codex/auth.json`, Codex version, and AnyRoute status.
-2. If Codex direct passes but Hermes fails, inspect runtime resolver and named provider resolution.
-3. If Hermes passes but Telegram only gets short progress, inspect app-server timeout, progress summary, and auto-continue.
-4. If GitHub upload fails with 403, replace the token with one that has target repo `Contents: Read and write`.
-5. If AnyRoute returns high-demand or 429/503, classify as upstream instability and retry later rather than changing the architecture.
+2. If Codex direct passes but Hermes fails, inspect Hermes config, runtime resolver, and named provider resolution.
+3. If the gateway fails only after restart, run `hermes_anyroute_guard.py` and inspect the systemd `ExecStartPre` drop-in.
+4. If Hermes passes but Telegram only gets short progress, inspect app-server timeout, progress summary, and auto-continue.
+5. If GitHub upload fails with 403, replace the token with one that has target repo `Contents: Read and write`.
+6. If AnyRoute returns high-demand or 429/503, classify as upstream instability and retry later rather than changing the architecture.

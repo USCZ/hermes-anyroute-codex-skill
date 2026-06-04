@@ -160,6 +160,7 @@ nano /root/.hermes/config.yaml
 model:
   default: gpt-5.5
   provider: codex-anyrouter
+  api_mode: codex_app_server
   context_length: 200000
   openai_runtime: auto
 
@@ -169,18 +170,51 @@ providers:
     base_url: https://anyrouter.top/v1
     api_key: <YOUR_ANYROUTE_API_KEY>
     default_model: gpt-5.5
-    api_mode: codex_responses
+    api_mode: codex_app_server
 ```
 
-这里看起来写的是 `api_mode: codex_responses`，但最终运行时必须被 Hermes 代码改写成：
+这套方案的关键是：配置文件和运行时解析都要指向 `codex_app_server`。如果重启后 Hermes 变成 `provider=custom base_url=https://anyrouter.top/v1 model=gpt-5.5`，它就绕过了 Codex app-server，AnyRoute 会因为请求形状不对返回 `invalid codex request`。
+
+### 5. 安装 Gateway 重启守卫
+
+把技能里带的守卫脚本复制到 Hermes 源码目录：
+
+```bash
+install -m 0755 \
+  ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/hermes_anyroute_guard.py \
+  /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+创建 systemd drop-in：
+
+```bash
+mkdir -p /etc/systemd/system/hermes-gateway.service.d
+nano /etc/systemd/system/hermes-gateway.service.d/10-anyroute-guard.conf
+```
+
+内容是：
+
+```ini
+[Service]
+ExecStartPre=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+加载并先手动运行一次守卫：
+
+```bash
+systemctl daemon-reload
+/usr/local/lib/hermes-agent/venv/bin/python /usr/local/lib/hermes-agent/scripts/hermes_anyroute_guard.py
+```
+
+期望输出：
 
 ```text
-api_mode = codex_app_server
+[hermes-anyroute-guard] OK: codex-anyrouter is bound to Codex app-server
 ```
 
-这是这套方案的关键。如果没有改写，Hermes 就可能绕过 Codex，直接打到 AnyRoute，然后出现 `invalid codex request`、`must be stream request` 等错误。
+这一步用于防止 VPS 或 `hermes-gateway.service` 重启后，AnyRoute 又回退到 Hermes direct/custom 请求。守卫失败时 gateway 不应该以错误链路启动。
 
-### 5. 先跑只读自检
+### 6. 先跑只读自检
 
 这个命令不会主动请求模型，主要检查配置和源码补丁是否在：
 
@@ -190,7 +224,7 @@ python3 ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/check_any
 
 如果最后 Summary 里有 `FAIL`，优先看失败项。`WARN` 不一定是坏事，通常表示需要人工确认。
 
-### 6. 再跑 live 检查
+### 7. 再跑 live 检查
 
 这个命令会请求 AnyRoute / Codex / Hermes，会消耗一点额度：
 
@@ -210,7 +244,22 @@ python3 ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/check_any
 python3 ~/.hermes/skills/devops/hermes-anyroute-codex-operator/scripts/check_anyroute_codex_operator.py --live --gateway --tool-live
 ```
 
-### 7. 手动验证三条链路
+### 8. 重启 Gateway 并查看日志
+
+```bash
+systemctl restart hermes-gateway.service
+systemctl status hermes-gateway.service --no-pager -l
+journalctl -u hermes-gateway.service --since "5 minutes ago" --no-pager -l
+```
+
+日志里应该能看到守卫成功，不应该再出现：
+
+```text
+provider=custom base_url=https://anyrouter.top/v1
+invalid codex request
+```
+
+### 9. 手动验证三条链路
 
 Codex 直连 AnyRoute：
 
@@ -242,6 +291,7 @@ hermes chat -q '请用终端运行 curl -I -s https://github.com，只回复 HTT
 | 看到的现象 | 通常代表什么 | 先怎么处理 |
 | --- | --- | --- |
 | `invalid codex request` | Hermes 可能绕过 Codex 直连 AnyRoute | 检查 `codex-anyrouter` 是否解析成 `codex_app_server` |
+| `provider=custom base_url=https://anyrouter.top/v1` | Gateway 重启后回退到了 direct/custom 链路 | 检查 Hermes 配置、runtime resolver、systemd `ExecStartPre` 守卫 |
 | `must be stream request` | 请求形状不是 Codex 需要的形状 | 不要改成普通 direct Responses |
 | `high demand`、`429`、`503` | AnyRoute 或上游拥堵 | 降低并发，稍后重试 |
 | ChatGPT plugin sync 401 | Codex API-key 模式下的插件同步噪声 | 如果模型回答成功，可以先忽略 |
@@ -261,6 +311,7 @@ skill/hermes-anyroute-codex-operator/
   references/error-map.md
   references/operator-runbook.md
   scripts/check_anyroute_codex_operator.py
+  scripts/hermes_anyroute_guard.py
 ```
 
 之前临时加入过的 Hermes 源码快照不属于可安装技能，已经移除，避免以后和真正的 Hermes 代码版本不一致。
